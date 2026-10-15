@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>澳門實時公共設施與商戶導航地圖</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: #f8f9fa;
+      color: #202124;
+    }
+    .bg-map-water { fill: #aadaff; background-color: #aadaff; }
+    .bg-map-land { fill: #e8ecef; }
+    .bg-map-lake { fill: #aadaff; stroke: #b0bec5; stroke-width: 1; }
+    .stroke-map-coast { stroke: #b0bec5; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .stroke-map-bridge { stroke: #fbbc04; stroke-width: 2.5; stroke-dasharray: 4 2; vector-effect: non-scaling-stroke; }
+    
+    .nav-route-walk { stroke: #1a73e8; stroke-width: 4; stroke-dasharray: 4 4; animation: dash 1s linear infinite; }
+    .nav-route-bus { stroke: #ea4335; stroke-width: 5; stroke-linecap: round; }
+    .nav-route-drive { stroke: #34a853; stroke-width: 5; stroke-dasharray: 8 4; animation: dash 1.5s linear infinite; }
+    @keyframes dash { to { stroke-dashoffset: -20; } }
+
+    .map-pin-group {
+      transition: transform 0.05s linear;
+    }
+
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f1f1; }
+    ::-webkit-scrollbar-thumb { background: #dadce0; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #bdc1c6; }
+  </style>
+</head>
+<body class="h-screen w-screen flex flex-col overflow-hidden bg-gray-100">
+
+  <!-- 頂部導覽列連同搜索欄 -->
+  <header class="bg-white border-b border-gray-200 px-4 py-2.5 flex flex-col md:flex-row items-center justify-between z-20 shadow-sm gap-2">
+    <div class="flex items-center space-x-3 w-full md:w-auto">
+      <div class="bg-blue-600 text-white p-2 rounded-lg flex items-center justify-center">
+        <i class="fa-solid fa-map-location-dot text-xl"></i>
+      </div>
+      <div>
+        <h1 class="text-lg font-bold text-gray-800 leading-tight">澳門實時公共設施與商戶地圖</h1>
+        <p class="text-xs text-gray-500">智能即時導航與多功能搜索系統</p>
+      </div>
+    </div>
+    
+    <!-- 中間：即時搜索欄 -->
+    <div class="relative w-full md:w-80">
+      <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-gray-400">
+        <i class="fa-solid fa-magnifying-glass"></i>
+      </span>
+      <input type="text" id="map-search-input" oninput="handleSearch(this.value)" placeholder="搜索地點、商戶、或巴士號碼 (如 33)..." class="w-full pl-9 pr-4 py-1.5 text-xs bg-gray-100 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition shadow-inner">
+    </div>
+
+    <div class="flex items-center space-x-2 bg-gray-100 px-3 py-1.5 rounded-full border border-gray-200 text-xs text-gray-600 w-full md:w-auto justify-end">
+      <i class="fa-solid fa-user-shield text-blue-500"></i>
+      <span>UID: <strong id="user-uid-display" class="font-mono text-gray-800">載入中...</strong></span>
+    </div>
+  </header>
+
+  <!-- 手動導航頂部導引條 -->
+  <div id="nav-banner" class="hidden bg-blue-700 text-white px-4 py-3 shadow-md z-30 flex flex-col transition-all duration-300">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="bg-white text-blue-700 p-2 rounded-full w-10 h-10 flex items-center justify-center font-bold text-lg shadow">
+          <i id="nav-icon" class="fa-solid fa-arrow-up"></i>
+        </div>
+        <div>
+          <div class="flex items-center space-x-2">
+            <span class="text-xs font-semibold bg-blue-800 text-blue-200 px-2 py-0.5 rounded" id="nav-step-count">步驟 1 / 4</span>
+            <span class="text-xs text-blue-200" id="nav-mode-info">步行 · 預計 15 分鐘</span>
+          </div>
+          <p id="nav-instruction" class="text-base font-bold text-white mt-0.5">請沿著當前道路直行...</p>
+        </div>
+      </div>
+      
+      <div class="flex items-center space-x-2">
+        <button onclick="prevNavStep()" id="btn-prev-step" class="bg-blue-800 hover:bg-blue-900 text-white px-3 py-1.5 rounded-lg text-sm font-medium transition disabled:opacity-50 border border-blue-600">
+          <i class="fa-solid fa-chevron-left mr-1"></i> 上一步
+        </button>
+        <button onclick="nextNavStep()" id="btn-next-step" class="bg-yellow-500 hover:bg-yellow-600 text-gray-900 px-3 py-1.5 rounded-lg text-sm font-bold transition shadow">
+          下一步 <i class="fa-solid fa-chevron-right ml-1"></i>
+        </button>
+        <button onclick="stopNavigation()" class="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-sm font-medium transition ml-2">
+          結束導航
+        </button>
+      </div>
+    </div>
+
+    <!-- 巴士專屬：多路線號碼選擇與站點序列容器 -->
+    <div id="bus-station-diagram" class="hidden mt-3 pt-3 border-t border-blue-600 text-xs space-y-2">
+      <div class="flex items-center justify-between">
+        <span class="font-bold text-blue-200"><i class="fa-solid fa-bus mr-1"></i> 選擇巴士號碼路線：</span>
+        <div id="bus-route-options" class="flex space-x-1.5 overflow-x-auto py-1"></div>
+      </div>
+      <div class="bg-blue-800/70 p-2.5 rounded-lg">
+        <div class="flex items-center justify-between mb-1 text-[11px] text-blue-200">
+          <span id="active-route-title">路線詳情</span>
+          <span id="active-route-badge" class="text-[10px] bg-yellow-500 text-gray-900 font-bold px-1.5 py-0.5 rounded">最佳推薦</span>
+        </div>
+        <div id="bus-stops-sequence" class="flex items-center space-x-3 overflow-x-auto py-1.5"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 主內容區域 -->
+  <div class="flex-1 flex flex-col md:flex-row overflow-hidden relative">
+    
+    <!-- 左側面板 -->
+    <aside class="w-full md:w-96 bg-white border-r border-gray-200 flex flex-col z-10 shadow-lg h-1/2 md:h-full">
+      
+      <!-- 分類頁籤 -->
+      <div class="p-3 bg-gray-50 border-b border-gray-200 flex space-x-1 overflow-x-auto text-xs font-medium">
+        <button onclick="filterCategory('all', event)" class="cat-btn active px-3 py-1.5 rounded-full bg-blue-600 text-white font-semibold shadow-sm">全部</button>
+        <button onclick="filterCategory('casino', event)" class="cat-btn px-3 py-1.5 rounded-full bg-white text-gray-700 border hover:bg-gray-100">娛樂場</button>
+        <button onclick="filterCategory('toilet', event)" class="cat-btn px-3 py-1.5 rounded-full bg-white text-gray-700 border hover:bg-gray-100">洗手間</button>
+        <button onclick="filterCategory('bus', event)" class="cat-btn px-3 py-1.5 rounded-full bg-white text-gray-700 border hover:bg-gray-100">巴士站</button>
+        <button onclick="filterCategory('shop', event)" class="cat-btn px-3 py-1.5 rounded-full bg-white text-gray-700 border hover:bg-gray-100">商戶</button>
+        <button onclick="filterCategory('school', event)" class="cat-btn px-3 py-1.5 rounded-full bg-white text-gray-700 border hover:bg-gray-100">學校</button>
+      </div>
+
+      <!-- 內容視圖容器 -->
+      <div class="flex-1 flex flex-col overflow-hidden relative">
+        <!-- 地點列表視圖 -->
+        <div id="location-list-container" class="flex-1 overflow-y-auto p-3 space-y-2.5"></div>
+
+        <!-- 地點詳情與評論面板 -->
+        <div id="location-detail-panel" class="hidden flex-1 flex-col overflow-y-auto bg-white p-4">
+          <div class="flex justify-between items-center mb-2">
+            <button onclick="closeDetailPanel()" class="text-gray-500 hover:text-gray-800 text-xs flex items-center">
+              <i class="fa-solid fa-arrow-left mr-1"></i> 返回列表
+            </button>
+          </div>
+          <div id="detail-content"></div>
+
+          <div class="mt-6 pt-4 border-t border-gray-200">
+            <h3 class="font-bold text-gray-800 text-sm mb-3 flex items-center justify-between">
+              <span><i class="fa-solid fa-comments text-blue-600 mr-1.5"></i> 即時用戶評論</span>
+              <span class="text-xs text-gray-400 font-normal">Firebase 實時同步</span>
+            </h3>
+
+            <div class="space-y-2 mb-4">
+              <textarea id="comment-input" rows="2" placeholder="撰寫您的評價..." class="w-full text-xs p-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+              <div class="flex justify-between items-center">
+                <div class="flex items-center space-x-1 text-xs text-gray-500">
+                  <span>評分:</span>
+                  <select id="comment-rating" class="border border-gray-300 rounded px-1.5 py-0.5 text-xs bg-white">
+                    <option value="5">⭐⭐⭐⭐⭐ (5.0)</option>
+                    <option value="4">⭐⭐⭐⭐ (4.0)</option>
+                    <option value="3">⭐⭐⭐ (3.0)</option>
+                    <option value="2">⭐⭐ (2.0)</option>
+                    <option value="1">⭐ (1.0)</option>
+                  </select>
+                </div>
+                <button onclick="submitComment()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1.5 rounded-lg font-medium transition">
+                  發表評論
+                </button>
+              </div>
+            </div>
+            <div id="comments-list" class="space-y-3"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 路線導航設定面板 -->
+      <div class="p-3 bg-gray-50 border-t border-gray-200 shadow-inner">
+        <h3 class="text-xs font-bold text-gray-600 uppercase mb-2 flex items-center justify-between">
+          <span><i class="fa-solid fa-route text-blue-600 mr-1.5"></i> 路線導航設定</span>
+        </h3>
+        
+        <div class="grid grid-cols-3 gap-1 mb-2.5 bg-gray-200 p-1 rounded-lg text-xs">
+          <button onclick="selectTransportMode('walk')" id="mode-walk" class="transport-btn bg-white font-bold text-blue-600 py-1 rounded shadow-sm flex items-center justify-center space-x-1">
+            <i class="fa-solid fa-person-walking"></i>
+            <span>步行</span>
+          </button>
+          <button onclick="selectTransportMode('bus')" id="mode-bus" class="transport-btn text-gray-600 hover:text-gray-900 py-1 rounded flex items-center justify-center space-x-1">
+            <i class="fa-solid fa-bus"></i>
+            <span>巴士</span>
+          </button>
+          <button onclick="selectTransportMode('drive')" id="mode-drive" class="transport-btn text-gray-600 hover:text-gray-900 py-1 rounded flex items-center justify-center space-x-1">
+            <i class="fa-solid fa-car"></i>
+            <span>駕車/出租</span>
+          </button>
+        </div>
+
+        <div class="space-y-2 text-xs">
+          <div>
+            <label class="block text-gray-500 mb-0.5">選擇起點：</label>
+            <select id="nav-start-select" onchange="onNavOptionChange()" class="w-full border border-gray-300 rounded-md p-1.5 bg-white font-medium text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"></select>
+          </div>
+          <div>
+            <label class="block text-gray-500 mb-0.5">選擇終點：</label>
+            <select id="nav-end-select" onchange="onNavOptionChange()" class="w-full border border-gray-300 rounded-md p-1.5 bg-white font-medium text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"></select>
+          </div>
+          <button onclick="startNavigation()" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-md font-bold transition flex items-center justify-center space-x-1 shadow-sm">
+            <i class="fa-solid fa-location-arrow"></i>
+            <span>開始導航</span>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 右側地圖視圖 -->
+    <main id="map-container" class="flex-1 relative bg-map-water flex items-center justify-center overflow-hidden cursor-grab select-none">
+      <div id="map-transform-wrapper" class="w-full h-full flex items-center justify-center origin-center transition-transform duration-75">
+        <svg id="macau-svg-map" viewBox="0 0 1000 900" class="w-full h-full object-contain pointer-events-auto">
+          <!-- 澳門真實輪廓 -->
+          <g id="landmasses">
+            <path d="M 470 60 C 500 60, 540 80, 560 120 C 580 160, 550 200, 530 240 C 510 280, 480 340, 460 350 C 440 360, 410 350, 400 320 C 380 280, 390 220, 400 170 C 410 120, 440 60, 470 60 Z" class="bg-map-land stroke-map-coast" />
+            <circle cx="435" cy="310" r="12" class="bg-map-lake" />
+            <circle cx="415" cy="325" r="10" class="bg-map-lake" />
+            <path d="M 380 470 C 420 440, 560 440, 600 460 C 630 480, 620 530, 580 540 C 520 550, 420 550, 370 520 C 350 500, 360 480, 380 470 Z" class="bg-map-land stroke-map-coast" />
+            <path d="M 400 535 L 580 535 L 590 680 L 390 680 Z" class="bg-map-land stroke-map-coast" />
+            <path d="M 380 670 C 420 660, 580 660, 620 680 C 650 710, 640 810, 590 840 C 530 870, 420 860, 380 810 C 350 760, 360 690, 380 670 Z" class="bg-map-land stroke-map-coast" />
+          </g>
+
+          <g id="bridges">
+            <line x1="410" y1="335" x2="390" y2="470" class="stroke-map-bridge" />
+            <line x1="450" y1="345" x2="470" y2="450" class="stroke-map-bridge" />
+            <line x1="530" y1="230" x2="570" y2="460" class="stroke-map-bridge" />
+          </g>
+
+          <text x="465" y="180" font-size="15" font-weight="bold" fill="#7f8c8d" font-family="sans-serif">澳門半島</text>
+          <text x="475" y="495" font-size="14" font-weight="bold" fill="#7f8c8d" font-family="sans-serif">氹仔</text>
+          <text x="475" y="610" font-size="15" font-weight="bold" fill="#7f8c8d" font-family="sans-serif">路氹城</text>
+          <text x="475" y="760" font-size="15" font-weight="bold" fill="#7f8c8d" font-family="sans-serif">路環</text>
+
+          <polyline id="nav-polyline" points="" class="nav-route-walk hidden" />
+          <g id="map-pins-layer"></g>
+        </svg>
+      </div>
+
+      <!-- 地圖縮放控制按鈕 -->
+      <div class="absolute top-4 right-4 flex flex-col space-y-1.5 z-10 shadow-lg bg-white/90 backdrop-blur-md p-1 rounded-xl border border-gray-200">
+        <button onclick="zoomIn()" title="放大" class="w-8 h-8 hover:bg-gray-100 rounded-lg flex items-center justify-center text-gray-700 font-bold text-sm transition">
+          <i class="fa-solid fa-plus"></i>
+        </button>
+        <button onclick="zoomOut()" title="縮小" class="w-8 h-8 hover:bg-gray-100 rounded-lg flex items-center justify-center text-gray-700 font-bold text-sm transition border-t border-gray-100">
+          <i class="fa-solid fa-minus"></i>
+        </button>
+        <button onclick="resetZoom()" title="重置視圖" class="w-8 h-8 hover:bg-gray-100 rounded-lg flex items-center justify-center text-gray-700 font-bold text-xs transition border-t border-gray-100">
+          重置
+        </button>
+      </div>
+
+      <!-- AI 導航小助手浮動按鈕 -->
+      <button onclick="toggleAiAssistant()" class="absolute bottom-4 left-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white px-4 py-2.5 rounded-full shadow-xl flex items-center space-x-2 text-xs font-bold z-10 transition transform hover:scale-105 pointer-events-auto border border-white/20">
+        <i class="fa-solid fa-wand-magic-sparkles text-sm animate-pulse"></i>
+        <span>AI 導航小助手</span>
+      </button>
+
+      <!-- AI 聊天對話面板 -->
+      <div id="ai-chat-modal" class="hidden absolute bottom-16 left-4 w-80 md:w-[400px] bg-white rounded-2xl shadow-2xl border border-gray-200 z-30 flex flex-col overflow-hidden transition-all duration-300" style="height: 500px;">
+        <div class="bg-gradient-to-r from-blue-600 to-indigo-600 text-white p-3 flex items-center justify-between">
+          <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-robot text-base"></i>
+            <span class="font-bold text-sm">澳門導航 AI 小助手</span>
+          </div>
+          <button onclick="toggleAiAssistant()" class="text-white/80 hover:text-white text-sm">
+            <i class="fa-solid fa-xmark text-base"></i>
+          </button>
+        </div>
+
+        <div class="bg-gray-100 p-2 border-b border-gray-200 flex space-x-1 overflow-x-auto text-[11px] font-medium flex-shrink-0">
+          <button onclick="triggerAiFeature('peninsula_tour')" class="bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 px-2.5 py-1 rounded-full shadow-sm flex items-center space-x-1 whitespace-nowrap">
+            <i class="fa-solid fa-landmark"></i> <span>半島文化一日遊</span>
+          </button>
+          <button onclick="triggerAiFeature('taipa_tour')" class="bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 px-2.5 py-1 rounded-full shadow-sm flex items-center space-x-1 whitespace-nowrap">
+            <i class="fa-solid fa-hotel"></i> <span>路氹奢華遊</span>
+          </button>
+          <button onclick="triggerAiFeature('bus_guide')" class="bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 px-2.5 py-1 rounded-full shadow-sm flex items-center space-x-1 whitespace-nowrap">
+            <i class="fa-solid fa-bus"></i> <span>即時巴士交通</span>
+          </button>
+          <button onclick="triggerAiFeature('toilet_guide')" class="bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 px-2.5 py-1 rounded-full shadow-sm flex items-center space-x-1 whitespace-nowrap">
+            <i class="fa-solid fa-restroom"></i> <span>公共廁所查詢</span>
+          </button>
+        </div>
+
+        <div id="ai-chat-messages" class="flex-1 p-3 overflow-y-auto space-y-3 text-xs bg-gray-50">
+          <div class="flex items-start space-x-2">
+            <div class="w-7 h-7 rounded-full bg-blue-600 text-white flex items-center justify-center flex-shrink-0 text-xs shadow">
+              <i class="fa-solid fa-robot"></i>
+            </div>
+            <div class="bg-white p-2.5 rounded-xl shadow-sm border border-gray-200 text-gray-800 max-w-[85%] leading-relaxed">
+              您好！您可以在左上角搜索框輸入巴士號碼（如 33）或景點名稱進行搜索。
+            </div>
+          </div>
+        </div>
+
+        <div class="p-2.5 bg-white border-t border-gray-200 flex items-center space-x-2 flex-shrink-0">
+          <input type="text" id="ai-chat-input" onkeypress="handleAiKeyPress(event)" placeholder="輸入地點或旅遊問題..." class="flex-1 text-xs px-3 py-2 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50">
+          <button onclick="sendAiMessage()" class="bg-blue-600 hover:bg-blue-700 text-white w-8 h-8 rounded-full flex items-center justify-center text-xs transition shadow">
+            <i class="fa-solid fa-paper-plane"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- 圖例說明 -->
+      <div class="absolute bottom-4 right-4 bg-white/95 backdrop-blur-md p-3 rounded-lg shadow-md border border-gray-200 text-xs space-y-1.5 z-10 pointer-events-none">
+        <div class="font-bold text-gray-700 mb-1 border-b pb-1">圖例說明</div>
+        <div class="flex items-center space-x-2"><span class="w-3 h-3 rounded-full bg-amber-500 inline-block"></span><span class="text-gray-600">娛樂場 (Casino)</span></div>
+        <div class="flex items-center space-x-2"><span class="w-3 h-3 rounded-full bg-emerald-500 inline-block"></span><span class="text-gray-600">洗手間 (Toilet)</span></div>
+        <div class="flex items-center space-x-2"><span class="w-3 h-3 rounded-full bg-blue-500 inline-block"></span><span class="text-gray-600">巴士站 (Bus)</span></div>
+        <div class="flex items-center space-x-2"><span class="w-3 h-3 rounded-full bg-purple-500 inline-block"></span><span class="text-gray-600">特色商戶 (Shop)</span></div>
+        <div class="flex items-center space-x-2"><span class="w-3 h-3 rounded-full bg-red-500 inline-block"></span><span class="text-gray-600">學校 (School)</span></div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    let currentUserId = localStorage.getItem('macau_user_uid');
+    if (!currentUserId) {
+      currentUserId = 'USR-' + Math.floor(100000 + Math.random() * 900000);
+      localStorage.setItem('macau_user_uid', currentUserId);
+    }
+    document.getElementById('user-uid-display').innerText = currentUserId;
+
+    const locations = [
+      { id: 'loc-1', name: '澳門聖保祿學校', category: 'school', color: '#ef4444', icon: 'fa-school', cx: 480, cy: 110, traffic: 45, rating: 4.8, area: '澳門半島', isIsland: false },
+      { id: 'loc-10', name: '澳門培正中學', category: 'school', color: '#ef4444', icon: 'fa-graduation-cap', cx: 485, cy: 155, traffic: 52, rating: 4.7, area: '澳門半島', isIsland: false },
+      { id: 'loc-11', name: '澳門大學 (舊址)', category: 'school', color: '#ef4444', icon: 'fa-book-open', cx: 460, cy: 480, traffic: 38, rating: 4.6, area: '氹仔', isIsland: true },
+
+      { id: 'loc-2', name: '新葡京娛樂場', category: 'casino', color: '#f59e0b', icon: 'fa-dice-five', cx: 445, cy: 285, traffic: 88, rating: 4.6, area: '澳門半島', isIsland: false },
+      { id: 'loc-3', name: '威尼斯人綜合渡假村', category: 'casino', color: '#f59e0b', icon: 'fa-building-columns', cx: 470, cy: 585, traffic: 92, rating: 4.9, area: '路氹城', isIsland: true },
+      { id: 'loc-4', name: '澳門銀河渡假城', category: 'casino', color: '#f59e0b', icon: 'fa-gem', cx: 430, cy: 575, traffic: 85, rating: 4.7, area: '路氹城', isIsland: true },
+      { id: 'loc-5', name: '美獅美高梅', category: 'casino', color: '#f59e0b', icon: 'fa-crown', cx: 540, cy: 625, traffic: 79, rating: 4.7, area: '路氹城', isIsland: true },
+      { id: 'loc-12', name: '新濠天地', category: 'casino', color: '#f59e0b', icon: 'fa-dice', cx: 520, cy: 585, traffic: 86, rating: 4.8, area: '路氹城', isIsland: true },
+      { id: 'loc-13', name: '澳門巴黎人', category: 'casino', color: '#f59e0b', icon: 'fa-hotel', cx: 470, cy: 630, traffic: 90, rating: 4.8, area: '路氹城', isIsland: true },
+
+      { id: 'loc-6', name: '議事亭前地公廁', category: 'toilet', color: '#10b981', icon: 'fa-restroom', cx: 435, cy: 240, traffic: 60, rating: 4.2, area: '澳門半島', isIsland: false },
+      { id: 'loc-7', name: '氹仔官也街公廁', category: 'toilet', color: '#10b981', icon: 'fa-restroom', cx: 480, cy: 510, traffic: 70, rating: 4.0, area: '氹仔', isIsland: true },
+      { id: 'loc-14', name: '大三巴牌坊公廁', category: 'toilet', color: '#10b981', icon: 'fa-restroom', cx: 445, cy: 215, traffic: 80, rating: 4.1, area: '澳門半島', isIsland: false },
+      { id: 'loc-15', name: '漁人碼頭公廁', category: 'toilet', color: '#10b981', icon: 'fa-restroom', cx: 530, cy: 220, traffic: 40, rating: 4.3, area: '澳門半島', isIsland: false },
+
+      { id: 'loc-8', name: '鉅記手信 (官也街店)', category: 'shop', color: '#a855f7', icon: 'fa-bag-shopping', cx: 495, cy: 515, traffic: 90, rating: 4.8, area: '氹仔', isIsland: true },
+      { id: 'loc-9', name: '安德魯餅店 (路環總店)', category: 'shop', color: '#a855f7', icon: 'fa-cookie', cx: 470, cy: 800, traffic: 84, rating: 4.9, area: '路環', isIsland: true },
+      { id: 'loc-16', name: '最香餅家', category: 'shop', color: '#a855f7', icon: 'fa-cookie-bite', cx: 420, cy: 265, traffic: 75, rating: 4.7, area: '澳門半島', isIsland: false },
+      { id: 'loc-17', name: '新八佰伴百貨', category: 'shop', color: '#a855f7', icon: 'fa-store', cx: 440, cy: 295, traffic: 88, rating: 4.6, area: '澳門半島', isIsland: false },
+
+      { id: 'bus-1', name: '關閘總站', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 470, cy: 75, traffic: 88, rating: 4.2, area: '澳門半島', isIsland: false, routes: ['1', '3', '10', '27', '30'] },
+      { id: 'bus-2', name: '巴波沙大馬路', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 470, cy: 95, traffic: 75, rating: 4.1, area: '澳門半島', isIsland: false, routes: ['1', '3', '9', '25', '34'] },
+      { id: 'bus-3', name: '筷子基總站', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 415, cy: 120, traffic: 65, rating: 4.3, area: '澳門半島', isIsland: false, routes: ['4', '7', '26', '33'] },
+      { id: 'bus-4', name: '紅街市', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 435, cy: 140, traffic: 82, rating: 4.4, area: '澳門半島', isIsland: false, routes: ['5', '9', '16', '26A', '32'] },
+      { id: 'bus-5', name: '鏡湖醫院', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 450, cy: 180, traffic: 68, rating: 4.5, area: '澳門半島', isIsland: false, routes: ['8', '8A', '17', '18', '19'] },
+      { id: 'bus-6', name: '白鴿巢總站', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 425, cy: 195, traffic: 55, rating: 4.4, area: '澳門半島', isIsland: false, routes: ['17', '18', '26'] },
+      { id: 'bus-7', name: '高士德 / 盧廉若公園', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 475, cy: 165, traffic: 70, rating: 4.2, area: '澳門半島', isIsland: false, routes: ['2', '4', '5', '9A', '12'] },
+      { id: 'bus-8', name: '水坑尾 / 商業銀行', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 460, cy: 225, traffic: 85, rating: 4.6, area: '澳門半島', isIsland: false, routes: ['2', '4', '7', '8', '9', '12'] },
+      { id: 'bus-9', name: '新馬路 / 永亨', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 430, cy: 255, traffic: 90, rating: 4.1, area: '澳門半島', isIsland: false, routes: ['3', '3A', '10', '26A', '33'] },
+      { id: 'bus-10', name: '亞馬喇前地', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 445, cy: 305, traffic: 95, rating: 4.7, area: '澳門半島', isIsland: false, routes: ['N1', 'N2', 'MT1', 'MT2', '3A', '10', '11'] },
+      { id: 'bus-11', name: '媽閣廟', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 400, cy: 335, traffic: 72, rating: 4.5, area: '澳門半島', isIsland: false, routes: ['1', '2', '5', '10', '11', '18', '21A'] },
+      { id: 'bus-12', name: '旅遊塔', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 410, cy: 350, traffic: 60, rating: 4.6, area: '澳門半島', isIsland: false, routes: ['9A', '18', '23', '32'] },
+      { id: 'bus-13', name: '柯維納馬路 (氹仔總站)', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 420, cy: 490, traffic: 78, rating: 4.4, area: '氹仔', isIsland: true, routes: ['11', '15', '22', '28A', '30', '33', '34'] },
+      { id: 'bus-14', name: '澳門運動場', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 445, cy: 520, traffic: 65, rating: 4.3, area: '氹仔', isIsland: true, routes: ['11', '22', '28A', '30', '33'] },
+      { id: 'bus-15', name: '氹仔官也街', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 475, cy: 525, traffic: 89, rating: 4.8, area: '氹仔', isIsland: true, routes: ['11', '22', '28A', '30', '33', '34'] },
+      { id: 'bus-16', name: '路氹東 / 澳門巴黎人', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 500, cy: 630, traffic: 91, rating: 4.8, area: '路氹城', isIsland: true, routes: ['25B', '26A', 'MT1', 'MT3'] },
+      { id: 'bus-17', name: '路環市區', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 460, cy: 790, traffic: 50, rating: 4.9, area: '路環', isIsland: true, routes: ['21A', '25.6', '50', 'N3'] },
+      { id: 'bus-18', name: '石排灣總站', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 480, cy: 720, traffic: 45, rating: 4.2, area: '路環', isIsland: true, routes: ['21A', '26', '50', 'N3'] },
+      { id: 'bus-19', name: '外港碼頭總站', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 540, cy: 200, traffic: 62, rating: 4.4, area: '澳門半島', isIsland: false, routes: ['3A', '10', '28A', '32'] },
+      { id: 'bus-20', name: '澳門機場總站', category: 'bus', color: '#3b82f6', icon: 'fa-bus', cx: 580, cy: 520, traffic: 70, rating: 4.5, area: '氹仔', isIsland: true, routes: ['26', '36', 'MT1', 'MT2'] }
+    ];
+
+    const busRouteDatabase = {
+      '1': ['關閘總站', '巴波沙大馬路', '台山街市', '紅街市', '白鴿巢總站', '媽閣廟'],
+      '3': ['關閘總站', '巴波沙大馬路', '祐漢街市', '水坑尾', '新馬路 / 永亨', '亞馬喇前地'],
+      '10': ['關閘總站', '慕拉士大馬路', '高士德 / 盧廉若公園', '水坑尾', '亞馬喇前地', '新馬路', '媽閣廟'],
+      '17': ['鏡湖醫院', '白鴿巢總站', '高士德大馬路', '荷蘭園', '亞馬喇前地'],
+      '33': ['筷子基總站', '紅街市', '新馬路 / 永亨', '亞馬喇前地', '媽閣廟', '嘉樂庇總督大橋 (跨海)', '柯維納馬路', '澳門運動場', '氹仔官也街'],
+      '3A': ['外港碼頭總站', '水塘馬路', '水坑尾', '新馬路 / 永亨', '亞馬喇前地', '媽閣廟'],
+      '26A': ['筷子基總站', '紅街市', '沙梨頭海邊街', '新馬路', '亞馬喇前地', '澳門運動場', '路氹東 / 澳門巴黎人', '路環市區']
+    };
+
+    let commentsDatabase = {};
+    locations.forEach(l => { commentsDatabase[l.id] = []; });
+    commentsDatabase['loc-1'] = [
+      { id: 'c1', user: 'USR-882103', text: '環境優美，教學設施非常完善！', rating: 5, time: '10分鐘前', likes: 12, likedBy: [] }
+    ];
+
+    let selectedLocationId = null;
+    let activeCategory = 'all';
+    let searchQuery = '';
+    let selectedTransportMode = 'walk';
+    let isDetailViewActive = false;
+
+    let scale = 1, panX = 0, panY = 0, isDragging = false, startX = 0, startY = 0;
+    const mapContainer = document.getElementById('map-container');
+    const transformWrapper = document.getElementById('map-transform-wrapper');
+
+    mapContainer.addEventListener('mousedown', (e) => {
+      if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
+      isDragging = true;
+      startX = e.clientX - panX;
+      startY = e.clientY - panY;
+      mapContainer.classList.remove('cursor-grab');
+      mapContainer.classList.add('cursor-grabbing');
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      panX = e.clientX - startX;
+      panY = e.clientY - startY;
+      updateMapTransform();
+    });
+
+    window.addEventListener('mouseup', () => {
+      isDragging = false;
+      mapContainer.classList.remove('cursor-grabbing');
+      mapContainer.classList.add('cursor-grab');
+    });
+
+    mapContainer.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const zoomIntensity = 0.15;
+      scale += (e.deltaY < 0 ? zoomIntensity : -zoomIntensity);
+      scale = Math.min(Math.max(scale, 0.5), 4);
+      updateMapTransform();
+    }, { passive: false });
+
+    function zoomIn() { scale = Math.min(scale + 0.4, 4); updateMapTransform(); }
+    function zoomOut() { scale = Math.max(scale - 0.4, 0.5); updateMapTransform(); }
+    function resetZoom() { scale = 1; panX = 0; panY = 0; updateMapTransform(); }
+    
+    function updateMapTransform() {
+      transformWrapper.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+      
+      const pinScale = Math.max(0.5, Math.min(2.0, 1 / Math.pow(scale, 0.6)));
+      document.querySelectorAll('.map-pin-group').forEach(pin => {
+        const cx = pin.getAttribute('data-cx');
+        const cy = pin.getAttribute('data-cy');
+        pin.style.transformOrigin = `${cx}px ${cy}px`;
+        pin.style.transform = `scale(${pinScale})`;
+      });
+    }
+
+    function toggleAiAssistant() {
+      const modal = document.getElementById('ai-chat-modal');
+      modal.classList.toggle('hidden');
+      if (!modal.classList.contains('hidden')) {
+        document.getElementById('ai-chat-input').focus();
+      }
+    }
+
+    function handleAiKeyPress(e) {
+      if (e.key === 'Enter') {
+        sendAiMessage();
+      }
+    }
+
+    function triggerAiFeature(featureKey) {
+      let promptText = "";
+      if (featureKey === 'peninsula_tour') promptText = "請為我規劃澳門半島文化一日遊路線";
+      if (featureKey === 'taipa_tour') promptText = "請為我規劃路氹奢華渡假遊路線";
+      if (featureKey === 'bus_guide') promptText = "請問澳門有哪些主要的巴士樞紐與搭乘建議？";
+      if (featureKey === 'toilet_guide') promptText = "請問熱門景點附近哪裡有公廁？";
+      
+      document.getElementById('ai-chat-input').value = promptText;
+      sendAiMessage();
+    }
+
+    function sendAiMessage() {
+      const input = document.getElementById('ai-chat-input');
+      const text = input.value.trim();
+      if (!text) return;
+
+      const messagesContainer = document.getElementById('ai-chat-messages');
+
+      messagesContainer.innerHTML += `
+        <div class="flex items-start justify-end space-x-2">
+          <div class="bg-blue-600 text-white p-2.5 rounded-xl shadow-sm max-w-[85%] leading-relaxed">
+            ${escapeHtml(text)}
+          </div>
+          <div class="w-7 h-7 rounded-full bg-gray-700 text-white flex items-center justify-center flex-shrink-0 text-xs shadow">
+            <i class="fa-solid fa-user"></i>
+          </div>
+        </div>
+      `;
+      input.value = '';
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+      setTimeout(() => {
+        let reply = "收到您的問題！建議您可以使用左側導航面板規劃精準路線。";
+        const lower = text.toLowerCase();
+
+        if (lower.includes('半島文化一日遊') || lower.includes('澳門半島')) {
+          reply = "🌟 **澳門半島歷史文化一日遊**：\n1. 站點 A：【關閘總站】出發\n2. 站點 B：【大三巴牌坊】與【議事亭前地】拍照與品嚐小吃\n3. 站點 C：【新八佰伴】購物\n4. 站點 D：【媽閣廟】感受傳統歷史\n🚗 **交通**：半島景點鄰近，建議以步行搭配 3 號或 10 號巴士！";
+        } else if (lower.includes('路氹') || lower.includes('奢華遊')) {
+          reply = "🌟 **路氹休閒渡假一日遊**：\n1. 站點 A：【威尼斯人綜合渡假村】逛大運河購物中心\n2. 站點 B：【氹仔官也街】吃安德魯蛋塔與買鉅記手信\n3. 站點 C：【澳門巴黎人】與【美獅美高梅】欣賞夜景\n🚗 **交通**：可搭乘 33 號或 26A 號巴士橫跨大橋直達！";
+        } else if (lower.includes('巴士') || lower.includes('交通')) {
+          reply = "🚌 **澳門巴士與交通指南**：\n- 主要樞紐：【關閘總站】、【亞馬喇前地】、【柯維納馬路站】。\n- 跨海交通：往返澳門半島與氹仔可搭乘 33 號巴士，途經嘉樂庇總督大橋。";
+        } else if (lower.includes('廁所') || lower.includes('公廁')) {
+          reply = "🚻 **熱門公共洗手間位置**：\n- 澳門半島：【議事亭前地公廁】、【大三巴牌坊公廁】\n- 氹仔島：【氹仔官也街公廁】\n您可在地圖上點擊查看其實時擁擠度！";
+        }
+
+        messagesContainer.innerHTML += `
+          <div class="flex items-start space-x-2">
+            <div class="w-7 h-7 rounded-full bg-blue-600 text-white flex items-center justify-center flex-shrink-0 text-xs shadow">
+              <i class="fa-solid fa-robot"></i>
+            </div>
+            <div class="bg-white p-2.5 rounded-xl shadow-sm border border-gray-200 text-gray-800 max-w-[85%] leading-relaxed whitespace-pre-line">
+              ${reply}
+            </div>
+          </div>
+        `;
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      }, 600);
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    // 搜尋時不被選單分類限制，直接顯示所有匹配結果
+    function handleSearch(query) {
+      searchQuery = query.trim().toLowerCase();
+      renderMapAndList();
+
+      if (isDetailViewActive) {
+        closeDetailPanel();
+      }
+    }
+
+    function selectTransportMode(mode) {
+      selectedTransportMode = mode;
+      document.querySelectorAll('.transport-btn').forEach(btn => {
+        btn.className = "transport-btn text-gray-600 hover:text-gray-900 py-1 rounded flex items-center justify-center space-x-1";
+      });
+      const activeBtn = document.getElementById(`mode-${mode}`);
+      if (activeBtn) {
+        activeBtn.className = "transport-btn bg-white font-bold text-blue-600 py-1 rounded shadow-sm flex items-center justify-center space-x-1";
+      }
+      const navBanner = document.getElementById('nav-banner');
+      if (navBanner && !navBanner.classList.contains('hidden')) {
+        startNavigation();
+      }
+    }
+
+    function onNavOptionChange() {
+      const navBanner = document.getElementById('nav-banner');
+      if (navBanner && !navBanner.classList.contains('hidden')) {
+        startNavigation();
+      }
+    }
+
+    // 修正過濾邏輯：若有輸入搜尋關鍵字，則跨類別全局搜尋；否則依循當前分類標籤過濾
+    function getFilteredLocations() {
+      return locations.filter(loc => {
+        if (searchQuery) {
+          const matchName = loc.name.toLowerCase().includes(searchQuery);
+          const matchArea = loc.area.toLowerCase().includes(searchQuery);
+          const matchCat = loc.category.toLowerCase().includes(searchQuery);
+          let matchBusRoute = false;
+          if (loc.routes) {
+            matchBusRoute = loc.routes.some(r => r.toLowerCase().includes(searchQuery));
+          }
+          if (!matchName && !matchArea && !matchCat && !matchBusRoute) return false;
+        } else {
+          if (activeCategory !== 'all' && loc.category !== activeCategory) return false;
+        }
+        return true;
+      });
+    }
+
+    function renderMapAndList() {
+      const pinsLayer = document.getElementById('map-pins-layer');
+      const listContainer = document.getElementById('location-list-container');
+      const startSelect = document.getElementById('nav-start-select');
+      const endSelect = document.getElementById('nav-end-select');
+
+      const currentStart = startSelect.value;
+      const currentEnd = endSelect.value;
+
+      pinsLayer.innerHTML = '';
+      listContainer.innerHTML = '';
+      startSelect.innerHTML = '';
+      endSelect.innerHTML = '';
+
+      locations.forEach((loc, idx) => {
+        const isStartSel = currentStart ? (loc.id === currentStart) : (idx === 0);
+        const isEndSel = currentEnd ? (loc.id === currentEnd) : (idx === 2);
+
+        startSelect.innerHTML += `<option value="${loc.id}" ${isStartSel ? 'selected' : ''}>${loc.name}</option>`;
+        endSelect.innerHTML += `<option value="${loc.id}" ${isEndSel ? 'selected' : ''}>${loc.name}</option>`;
+      });
+
+      const filtered = getFilteredLocations();
+      filtered.forEach(loc => {
+        const initialPinScale = Math.max(0.5, Math.min(2.0, 1 / Math.pow(scale, 0.6)));
+        const pinGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        pinGroup.setAttribute('class', 'map-pin-group cursor-pointer transition-all duration-200 hover:opacity-80 hover:brightness-110');
+        pinGroup.setAttribute('onclick', `selectLocation('${loc.id}')`);
+        pinGroup.setAttribute('data-cx', loc.cx);
+        pinGroup.setAttribute('data-cy', loc.cy);
+        pinGroup.style.transformOrigin = `${loc.cx}px ${loc.cy}px`;
+        pinGroup.style.transform = `scale(${initialPinScale})`;
+
+        pinGroup.innerHTML = `
+          <circle cx="${loc.cx}" cy="${loc.cy}" r="14" fill="${loc.color}" stroke="#ffffff" stroke-width="2" class="shadow"/>
+          <foreignObject x="${loc.cx - 8}" y="${loc.cy - 9}" width="16" height="16">
+            <div class="text-white text-xs flex items-center justify-center"><i class="fa-solid ${loc.icon}"></i></div>
+          </foreignObject>
+          <text x="${loc.cx}" y="${loc.cy + 26}" font-size="11" font-weight="bold" fill="#374151" text-anchor="middle" class="bg-white/80 px-1 rounded">${loc.name}</text>
+        `;
+        pinsLayer.appendChild(pinGroup);
+
+        const card = document.createElement('div');
+        card.id = `card-${loc.id}`;
+        card.className = "bg-white p-3 rounded-lg border border-gray-200 hover:border-blue-400 cursor-pointer shadow-sm transition flex items-center justify-between";
+        card.onclick = () => selectLocation(loc.id);
+        
+        let busRoutesBadge = '';
+        if (loc.routes) {
+          busRoutesBadge = `<div class="text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded mt-0.5">途經路線: ${loc.routes.join(', ')} 號</div>`;
+        }
+
+        card.innerHTML = `
+          <div class="flex items-center space-x-3">
+            <div class="w-9 h-9 rounded-full flex items-center justify-center text-white font-bold" style="background-color: ${loc.color}">
+              <i class="fa-solid ${loc.icon}"></i>
+            </div>
+            <div>
+              <h4 class="font-bold text-gray-800 text-sm">${loc.name}</h4>
+              <p class="text-xs text-gray-500">${loc.area} · ⭐ ${loc.rating}</p>
+              ${busRoutesBadge}
+            </div>
+          </div>
+          <div class="text-right">
+            <span id="traffic-badge-${loc.id}" class="text-xs px-2 py-0.5 rounded-full font-semibold ${loc.traffic > 70 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}">
+              ${loc.traffic}% ${loc.traffic > 70 ? '擁擠' : '順暢'}
+            </span>
+          </div>
+        `;
+        listContainer.appendChild(card);
+      });
+    }
+
+    function filterCategory(cat, e) {
+      activeCategory = cat;
+      document.querySelectorAll('.cat-btn').forEach(btn => {
+        btn.className = "cat-btn px-3 py-1.5 rounded-full bg-white text-gray-700 border hover:bg-gray-100";
+      });
+      if (e && e.currentTarget) {
+        e.currentTarget.className = "cat-btn active px-3 py-1.5 rounded-full bg-blue-600 text-white font-semibold shadow-sm";
+      }
+      renderMapAndList();
+
+      if (isDetailViewActive) {
+        closeDetailPanel();
+      }
+    }
+
+    function selectLocation(id, keepDetailState = false) {
+      selectedLocationId = id;
+      const loc = locations.find(l => l.id === id);
+      if (!loc) return;
+
+      isDetailViewActive = true;
+      document.getElementById('location-list-container').classList.add('hidden');
+      const panel = document.getElementById('location-detail-panel');
+      panel.classList.remove('hidden');
+      panel.classList.add('flex');
+
+      let busInfoHTML = '';
+      if (loc.category === 'bus' && loc.routes) {
+        busInfoHTML = `
+          <div class="mt-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
+            <h4 class="text-xs font-bold text-blue-800 mb-2"><i class="fa-solid fa-bus text-blue-600 mr-1"></i> 途經巴士路線與站點詳情</h4>
+        `;
+        loc.routes.forEach(routeNo => {
+          const stops = busRouteDatabase[routeNo] || ['關閘總站', '水坑尾', '亞馬喇前地', '媽閣廟'];
+          busInfoHTML += `
+            <div class="mb-2 text-xs">
+              <span class="font-semibold text-gray-700 bg-blue-200 px-1.5 py-0.5 rounded">路線 ${routeNo} 號</span>
+              <div class="flex items-center space-x-2 overflow-x-auto py-1.5 mt-1 bg-white p-2 rounded border border-blue-100">
+          `;
+          stops.forEach((st, sIdx) => {
+            busInfoHTML += `
+              <div class="flex items-center space-x-1 flex-shrink-0">
+                <div class="flex flex-col items-center">
+                  <div class="w-3.5 h-3.5 rounded-full bg-blue-600 text-white flex items-center justify-center text-[9px] font-bold">${sIdx+1}</div>
+                  <span class="text-[10px] text-gray-600 mt-0.5 whitespace-nowrap">${st}</span>
+                </div>
+                ${sIdx < stops.length - 1 ? '<div class="w-4 h-0.5 bg-blue-300 mb-3"></div>' : ''}
+              </div>
+            `;
+          });
+          busInfoHTML += `</div></div>`;
+        });
+        busInfoHTML += `</div>`;
+      }
+
+      document.getElementById('detail-content').innerHTML = `
+        <div class="flex items-center space-x-3 mb-3">
+          <div class="w-12 h-12 rounded-lg flex items-center justify-center text-white text-xl font-bold" style="background-color: ${loc.color}">
+            <i class="fa-solid ${loc.icon}"></i>
+          </div>
+          <div>
+            <h2 class="text-base font-bold text-gray-900">${loc.name}</h2>
+            <p class="text-xs text-gray-500">${loc.area} · 評分 ⭐ ${loc.rating}</p>
+          </div>
+        </div>
+        <div class="bg-gray-50 p-3 rounded-lg border border-gray-200 space-y-1 text-xs text-gray-600">
+          <div class="flex justify-between">
+            <span>實時人流量強度：</span>
+            <span class="font-bold text-blue-600" id="live-traffic-val">${loc.traffic}%</span>
+          </div>
+          <div class="w-full bg-gray-200 rounded-full h-2 mt-1">
+            <div id="live-traffic-bar" class="bg-blue-600 h-2 rounded-full transition-all duration-500" style="width: ${loc.traffic}%"></div>
+          </div>
+        </div>
+        ${busInfoHTML}
+      `;
+      renderComments();
+    }
+
+    function closeDetailPanel() {
+      isDetailViewActive = false;
+      document.getElementById('location-detail-panel').classList.add('hidden');
+      document.getElementById('location-detail-panel').classList.remove('flex');
+      document.getElementById('location-list-container').classList.remove('hidden');
+    }
+
+    function renderComments() {
+      const list = document.getElementById('comments-list');
+      list.innerHTML = '';
+      const comments = commentsDatabase[selectedLocationId] || [];
+      if (comments.length === 0) {
+        list.innerHTML = `<p class="text-xs text-gray-400 text-center py-4">尚無評價，快來發表第一條留言吧！</p>`;
+        return;
+      }
+      comments.forEach(c => {
+        list.innerHTML += `
+          <div class="bg-gray-50 p-3 rounded-lg border border-gray-100 space-y-1.5 text-xs">
+            <div class="flex justify-between items-center text-gray-500">
+              <span class="font-semibold text-gray-700">${c.user}</span>
+              <span>${'⭐'.repeat(c.rating)}</span>
+            </div>
+            <p class="text-gray-800">${c.text}</p>
+          </div>
+        `;
+      });
+    }
+
+    function submitComment() {
+      const input = document.getElementById('comment-input');
+      const rating = parseInt(document.getElementById('comment-rating').value);
+      const text = input.value.trim();
+      if (!text) return alert('請輸入評論內容！');
+      if (!commentsDatabase[selectedLocationId]) commentsDatabase[selectedLocationId] = [];
+      commentsDatabase[selectedLocationId].unshift({ id: 'c-' + Date.now(), user: currentUserId, text, rating, time: '剛剛' });
+      input.value = '';
+      renderComments();
+    }
+
+    let navSteps = [], currentNavIndex = 0, currentBusRoutes = [], activeBusRouteIndex = 0;
+    let cachedStartLoc = null, cachedEndLoc = null, cachedStartBus = null, cachedEndBus = null;
+
+    function startNavigation() {
+      const startId = document.getElementById('nav-start-select').value;
+      const endId = document.getElementById('nav-end-select').value;
+
+      if (startId === endId) {
+        alert('起點與終點不能相同！');
+        return;
+      }
+
+      cachedStartLoc = locations.find(l => l.id === startId);
+      cachedEndLoc = locations.find(l => l.id === endId);
+      const isCrossSea = cachedStartLoc.isIsland !== cachedEndLoc.isIsland;
+
+      const busStops = locations.filter(l => l.category === 'bus');
+      cachedStartBus = busStops[0];
+      let minDst = Infinity;
+      busStops.forEach(bs => {
+        const dst = Math.hypot(bs.cx - cachedStartLoc.cx, bs.cy - cachedStartLoc.cy);
+        if (dst < minDst) { minDst = dst; cachedStartBus = bs; }
+      });
+
+      cachedEndBus = busStops[0];
+      let minEndDst = Infinity;
+      busStops.forEach(bs => {
+        const dst = Math.hypot(bs.cx - cachedEndLoc.cx, bs.cy - cachedEndLoc.cy);
+        if (dst < minEndDst) { minEndDst = dst; cachedEndBus = bs; }
+      });
+
+      const diagramContainer = document.getElementById('bus-station-diagram');
+
+      if (selectedTransportMode === 'bus') {
+        diagramContainer.classList.remove('hidden');
+
+        let rawRoutes = [];
+        if (isCrossSea) {
+          rawRoutes = [
+            { number: '33', name: '33 號巴士 (經大橋)', stops: [cachedStartBus.name, '新馬路 / 永亨', '媽閣廟', '嘉樂庇總督大橋 (跨海)', '柯維納馬路', cachedEndBus.name] },
+            { number: '26A', name: '26A 號巴士 (經路氹)', stops: [cachedStartBus.name, '紅街市', '新馬路', '亞馬喇前地', '路氹東 / 澳門巴黎人', cachedEndBus.name] }
+          ];
+        } else {
+          rawRoutes = [
+            { number: '3', name: '3 號巴士 (主幹道)', stops: [cachedStartBus.name, '巴波沙大馬路', '水坑尾', '新馬路 / 永亨', cachedEndBus.name] },
+            { number: '10', name: '10 號巴士 (文化線)', stops: [cachedStartBus.name, '高士德 / 盧廉若公園', '水坑尾', '亞馬喇前地', cachedEndBus.name] },
+            { number: '1', name: '1 號巴士 (半島線)', stops: [cachedStartBus.name, '巴波沙大馬路', '紅街市', '白鴿巢總站', cachedEndBus.name] }
+          ];
+        }
+
+        rawRoutes.forEach(r => { r.stopCount = r.stops.length; });
+        const minStops = Math.min(...rawRoutes.map(r => r.stopCount));
+        
+        currentBusRoutes = rawRoutes.map(r => ({
+          ...r,
+          best: (r.stopCount === minStops)
+        }));
+
+        activeBusRouteIndex = 0;
+        renderBusRouteOptions();
+        renderActiveBusRoute();
+      } else {
+        diagramContainer.classList.add('hidden');
+      }
+
+      buildNavSteps(isCrossSea, cachedStartBus, cachedEndBus);
+      currentNavIndex = 0;
+      updateNavBanner();
+
+      const polyline = document.getElementById('nav-polyline');
+      polyline.className = `nav-route-${selectedTransportMode}`;
+      polyline.setAttribute('points', `${cachedStartLoc.cx},${cachedStartLoc.cy} ${isCrossSea ? '450,400 ' : ''}${cachedEndLoc.cx},${cachedEndLoc.cy}`);
+      polyline.classList.remove('hidden');
+
+      document.getElementById('nav-banner').classList.remove('hidden');
+    }
+
+    function renderBusRouteOptions() {
+      const optionsContainer = document.getElementById('bus-route-options');
+      optionsContainer.innerHTML = '';
+      currentBusRoutes.forEach((route, rIdx) => {
+        optionsContainer.innerHTML += `
+          <button onclick="switchBusRoute(${rIdx})" class="px-2.5 py-1 rounded text-[11px] font-bold transition flex items-center space-x-1 ${rIdx === activeBusRouteIndex ? 'bg-yellow-500 text-gray-900 shadow' : 'bg-blue-800 text-blue-200 hover:bg-blue-900'}">
+            <i class="fa-solid fa-bus"></i>
+            <span>${route.number} 號 ${route.best ? '⭐最佳' : ''}</span>
+          </button>
+        `;
+      });
+    }
+
+    function switchBusRoute(idx) {
+      activeBusRouteIndex = idx;
+      renderBusRouteOptions();
+      renderActiveBusRoute();
+      const isCrossSea = cachedStartLoc.isIsland !== cachedEndLoc.isIsland;
+      buildNavSteps(isCrossSea, cachedStartBus, cachedEndBus);
+      updateNavBanner();
+    }
+
+    function renderActiveBusRoute() {
+      const route = currentBusRoutes[activeBusRouteIndex];
+      document.getElementById('active-route-title').innerText = route.name + (route.best ? ' (最佳推薦路線)' : ' (備選路線)');
+      
+      const badge = document.getElementById('active-route-badge');
+      if (route.best) {
+        badge.innerText = '最佳推薦';
+        badge.className = 'text-[10px] bg-yellow-500 text-gray-900 font-bold px-1.5 py-0.5 rounded';
+      } else {
+        badge.innerText = '備選路線';
+        badge.className = 'text-[10px] bg-blue-900 text-blue-200 font-bold px-1.5 py-0.5 rounded';
+      }
+
+      const stopsSequence = document.getElementById('bus-stops-sequence');
+      stopsSequence.innerHTML = '';
+      route.stops.forEach((st, sIdx) => {
+        stopsSequence.innerHTML += `
+          <div class="flex items-center space-x-2 flex-shrink-0">
+            <div class="flex flex-col items-center">
+              <div class="w-5 h-5 rounded-full ${sIdx === 0 ? 'bg-green-500' : (sIdx === route.stops.length - 1 ? 'bg-red-500' : 'bg-white text-blue-700')} text-white font-bold flex items-center justify-center text-[10px] shadow">
+                ${sIdx + 1}
+              </div>
+              <span class="text-[10px] text-blue-100 mt-1 whitespace-nowrap">${st}</span>
+            </div>
+            ${sIdx < route.stops.length - 1 ? '<div class="w-6 h-0.5 bg-blue-400 mb-4"></div>' : ''}
+          </div>
+        `;
+      });
+    }
+
+    function buildNavSteps(isCrossSea, startBus, endBus) {
+      if (selectedTransportMode === 'walk') {
+        navSteps = [
+          { icon: 'fa-person-walking', text: `從 [${cachedStartLoc.name}] 出發，沿行人路步行`, dist: '約 250 米 · 3分鐘' },
+          { icon: isCrossSea ? 'fa-bridge' : 'fa-signs-post', text: isCrossSea ? '經嘉樂庇總督大橋橫跨大橋' : `經過 [${startBus.name}] 直行`, dist: '約 750 米 · 10分鐘' },
+          { icon: 'fa-flag-checkered', text: `抵達目的地：[${cachedEndLoc.name}]`, dist: '已到達' }
+        ];
+      } else if (selectedTransportMode === 'bus') {
+        const route = currentBusRoutes[activeBusRouteIndex];
+        navSteps = [
+          { icon: 'fa-person-walking', text: `步驟 1：從 [${cachedStartLoc.name}] 步行至上車站 【${startBus.name}】`, dist: '約 180 米' },
+          { icon: 'fa-bus', text: `步驟 2：搭乘 【${route.number} 號巴士】，於 【${endBus.name}】 下車`, dist: '車程約 15 分鐘' },
+          { icon: 'fa-person-walking-luggage', text: `步驟 3：從下車站步行 1 分鐘抵達目的地 [${cachedEndLoc.name}]`, dist: '已到達' }
+        ];
+      } else {
+        navSteps = [
+          { icon: 'fa-car', text: `從 [${cachedStartLoc.name}] 駕車出發`, dist: '約 400 米' },
+          { icon: 'fa-road', text: `沿主幹道行駛`, dist: '行車約 6 分鐘' },
+          { icon: 'fa-square-parking', text: `到達 [${cachedEndLoc.name}] 附近`, dist: '已到達' }
+        ];
+      }
+    }
+
+    function updateNavBanner() {
+      const step = navSteps[currentNavIndex];
+      const modeText = selectedTransportMode === 'walk' ? '步行' : (selectedTransportMode === 'bus' ? '巴士' : '駕車');
+      document.getElementById('nav-step-count').innerText = `步驟 ${currentNavIndex + 1} / ${navSteps.length}`;
+      document.getElementById('nav-mode-info').innerText = `${modeText} · ${step.dist}`;
+      document.getElementById('nav-instruction').innerText = step.text;
+      document.getElementById('nav-icon').className = `fa-solid ${step.icon}`;
+      document.getElementById('btn-prev-step').disabled = (currentNavIndex === 0);
+      document.getElementById('btn-next-step').disabled = (currentNavIndex === navSteps.length - 1);
+    }
+
+    function prevNavStep() { if (currentNavIndex > 0) { currentNavIndex--; updateNavBanner(); } }
+    function nextNavStep() { if (currentNavIndex < navSteps.length - 1) { currentNavIndex++; updateNavBanner(); } }
+    function stopNavigation() {
+      document.getElementById('nav-banner').classList.add('hidden');
+      document.getElementById('bus-station-diagram').classList.add('hidden');
+      document.getElementById('nav-polyline').classList.add('hidden');
+    }
+
+    // 每 7 秒自動更新所有人流量數據
+    setInterval(() => {
+      locations.forEach(loc => {
+        let delta = Math.floor(Math.random() * 17) - 8;
+        loc.traffic = Math.min(Math.max(loc.traffic + delta, 20), 98);
+
+        const badge = document.getElementById(`traffic-badge-${loc.id}`);
+        if (badge) {
+          const isCrowded = loc.traffic > 70;
+          badge.className = `text-xs px-2 py-0.5 rounded-full font-semibold ${isCrowded ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`;
+          badge.innerText = `${loc.traffic}% ${isCrowded ? '擁擠' : '順暢'}`;
+        }
+      });
+
+      if (isDetailViewActive && selectedLocationId) {
+        const currentLoc = locations.find(l => l.id === selectedLocationId);
+        if (currentLoc) {
+          const valEl = document.getElementById('live-traffic-val');
+          const barEl = document.getElementById('live-traffic-bar');
+          if (valEl) valEl.innerText = `${currentLoc.traffic}%`;
+          if (barEl) barEl.style.width = `${currentLoc.traffic}%`;
+        }
+      }
+    }, 7000);
+
+    renderMapAndList();
+  </script>
+</body>
+</html>
